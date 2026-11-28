@@ -40,6 +40,15 @@ var podAppliedKeys = []string{
 	"primaryuser",
 }
 
+// reservedKeyAliases maps each alias Valkey accepts for an operator-owned key to that key.
+// Valkey reads an alias as the key it names, so a user value under the alias is overridden the same way.
+// In Valkey's src/config.c, the alias is the second argument of the key's create*Config call.
+var reservedKeyAliases = map[string]string{
+	"cluster-slave-validity-factor": "cluster-replica-validity-factor",
+	"masterauth":                    "primaryauth",
+	"masteruser":                    "primaryuser",
+}
+
 // ownedKeysImage is new enough that no operator-owned directive is version-gated out of the base config.
 const ownedKeysImage = "valkey/valkey:9.1.0"
 
@@ -78,17 +87,24 @@ func operatorOwnedKeys() []string {
 	return keys
 }
 
-// TestReservedConfigKeysMatchBaseConfig pins ReservedConfigKeys to what the operator actually writes.
+// TestReservedConfigKeysMatchBaseConfig pins ReservedConfigKeys to what the operator actually writes, plus the aliases of those keys.
 // Without this, adding a directive to getBaseConfig would silently reintroduce the bug.
 // The new key would be accepted in spec.config and then overwritten, with nothing telling the user.
 func TestReservedConfigKeysMatchBaseConfig(t *testing.T) {
 	owned := operatorOwnedKeys()
+	want := slices.Clone(owned)
+	for alias, key := range reservedKeyAliases {
+		require.Contains(t, owned, key, "%s is listed as an alias of %s, which the operator does not set", alias, key)
+		want = append(want, alias)
+	}
+	slices.Sort(want)
 	reserved := slices.Clone(valkeyiov1alpha1.ReservedConfigKeys)
 	slices.Sort(reserved)
 
-	assert.Equal(t, owned, reserved,
-		"ReservedConfigKeys is out of sync with the operator's base config. "+
-			"Update ReservedConfigKeys in api/v1alpha1/valkeycluster_types.go and the XValidation rule on ValkeyClusterSpec.Config, which cannot reference it.")
+	assert.Equal(t, want, reserved,
+		"ReservedConfigKeys is out of sync with the operator's base config and reservedKeyAliases. "+
+			"Update ReservedConfigKeys in api/v1alpha1/valkeycluster_types.go and the XValidation rule on ValkeyClusterSpec.Config, which cannot reference it. "+
+			"For a new key, also check Valkey's src/config.c for an alias.")
 }
 
 // TestReservedConfigKeysMatchCELRule checks the hand-maintained CEL literal against ReservedConfigKeys.

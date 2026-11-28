@@ -77,7 +77,7 @@ Apply the image change and wait for the roll to finish before adding a version-g
 
 #### Reserved keys
 
-The operator owns the keys below and rejects them in `config`. It sets each one itself, either in the base `valkey.conf` or as a `valkey-server` command-line flag. A user value would be overridden and the intent lost without a signal, so the CRD rejects it at admission. Keys are matched case-insensitively.
+The operator owns the keys below and rejects them in `config`. It sets each one itself, either in the base `valkey.conf` or as a `valkey-server` command-line flag. A user value would be overridden and the intent lost without a signal, so the CRD rejects it at admission. Keys are matched case-insensitively, and aliases are rejected too, because Valkey treats an alias as the key it names.
 
 ```
 aclfile
@@ -88,7 +88,10 @@ cluster-config-file
 cluster-enabled
 cluster-preferred-endpoint-type
 cluster-replica-validity-factor
+cluster-slave-validity-factor    # alias of cluster-replica-validity-factor
 dir
+masterauth                       # alias of primaryauth
+masteruser                       # alias of primaryuser
 port
 primaryauth
 primaryuser

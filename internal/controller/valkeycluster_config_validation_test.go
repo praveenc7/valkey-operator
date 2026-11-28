@@ -135,6 +135,7 @@ var _ = Describe("ValkeyCluster spec.config validation", func() {
 		Entry("mixed case", "Cluster-Enabled"),
 		Entry("upper case", "PROTECTED-MODE"),
 		Entry("mixed case tls", "TLS-Port"),
+		Entry("mixed case alias", "MasterAuth"),
 	)
 
 	It("rejects a reserved key mixed in with valid ones", func() {

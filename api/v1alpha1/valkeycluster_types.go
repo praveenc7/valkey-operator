@@ -267,7 +267,7 @@ type ZonePinning struct {
 	Zones []string `json:"zones"`
 }
 
-// ReservedConfigKeys are the directives the operator sets itself.
+// ReservedConfigKeys are the directives the operator sets itself, and the aliases Valkey accepts for them.
 // A user value for one of these in spec.config is refused rather than silently dropped.
 //
 // The list also has to match the CEL rule on ValkeyClusterSpec.Config, which cannot reference a Go value.
@@ -280,7 +280,10 @@ var ReservedConfigKeys = []string{
 	"cluster-enabled",
 	"cluster-preferred-endpoint-type",
 	"cluster-replica-validity-factor",
+	"cluster-slave-validity-factor",
 	"dir",
+	"masterauth",
+	"masteruser",
 	"port",
 	"primaryauth",
 	"primaryuser",
@@ -434,7 +437,7 @@ type ValkeyClusterSpec struct {
 	// Keys the operator owns are rejected. See docs/valkeycluster.md for the list.
 	// Keys may contain only lowercase letters, digits, '.', '_' and '-'.
 	// +kubebuilder:validation:MaxProperties=1000
-	// +kubebuilder:validation:XValidation:rule="self.all(key, !(key.lowerAscii() in ['aclfile','cluster-allow-replica-migration','cluster-announce-hostname','cluster-announce-ip','cluster-config-file','cluster-enabled','cluster-preferred-endpoint-type','cluster-replica-validity-factor','dir','port','primaryauth','primaryuser','protected-mode','shutdown-on-sigterm','tls-auth-clients','tls-auth-clients-user','tls-ca-cert-file','tls-cert-file','tls-cluster','tls-key-file','tls-port','tls-replication']))",message="spec.config must not set operator-owned keys: the operator sets these itself and a user value would be ignored or would break its connection to the nodes. See docs/valkeycluster.md for the full list"
+	// +kubebuilder:validation:XValidation:rule="self.all(key, !(key.lowerAscii() in ['aclfile','cluster-allow-replica-migration','cluster-announce-hostname','cluster-announce-ip','cluster-config-file','cluster-enabled','cluster-preferred-endpoint-type','cluster-replica-validity-factor','cluster-slave-validity-factor','dir','masterauth','masteruser','port','primaryauth','primaryuser','protected-mode','shutdown-on-sigterm','tls-auth-clients','tls-auth-clients-user','tls-ca-cert-file','tls-cert-file','tls-cluster','tls-key-file','tls-port','tls-replication']))",message="spec.config must not set operator-owned keys: the operator sets these itself and a user value would be ignored or would break its connection to the nodes. See docs/valkeycluster.md for the full list"
 	// +kubebuilder:validation:XValidation:rule="self.all(key, key.matches('^[a-z0-9._-]+$'))",message="spec.config keys may contain only lowercase letters, digits, '.', '_' and '-'. Valkey unquotes and trims keys, so quoted or padded keys are rejected. The operator matches keys as written, so they must be lowercase"
 	// +optional
 	Config map[string]string `json:"config,omitempty"`
