@@ -56,7 +56,7 @@ It exists because a failover between two healthy pods moves nothing in Kubernete
 - A Valkey instance that fails to answer is backed off exponentially (up to a minute) rather than dialled every tick.
 - The Pod watch and the 30s backstop are both retained: the watch is faster for pod recreation, and the backstop is what makes a wedged poller a latency regression rather than an availability bug.
 
-Each tick gets one client per node from the `ClientProvider` in `internal/controller/clients.go`, which takes it from the pool in `internal/valkey/pool.go`. The pool keeps each client open across ticks and reconciles, so a tick normally opens no connections.
+Each tick gets one client per node from the `ClientProvider` in `internal/controller/clients.go`, which takes it from the pool in `internal/valkey/pool.go`. The pool keeps each client open across ticks and reconciles, so a tick normally opens no connections. On a TLS cluster the provider reuses the TLS config it builds from the server certificate Secret for 10 seconds, or until a dial fails, so it reads that Secret about once every 10 seconds rather than on every lookup.
 
 ## Key packages
 

@@ -20,8 +20,11 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"maps"
 	"net"
 	"strconv"
+	"sync"
+	"time"
 
 	vclient "github.com/valkey-io/valkey-go"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -62,7 +65,9 @@ func clientOption(address string, cfg connConfig) vclient.ClientOption {
 }
 
 // ClientProvider hands out pooled Valkey clients. The provider owns every
-// client it returns; callers never call Close on one.
+// client it returns; callers never call Close on one. A TLS config built from
+// a secret is reused for up to tlsConfigTTL, and rebuilt on the next lookup
+// after a dial fails.
 type ClientProvider interface {
 	// ForCluster resolves the cluster's TLS config and operator credentials
 	// once and returns a DialFunc that returns the pooled client for any of
@@ -81,29 +86,125 @@ type ClientProvider interface {
 // NewClientProvider returns a ClientProvider that takes its clients from
 // pool. c reads the operator password secret, apiReader the TLS secret.
 func NewClientProvider(c client.Client, apiReader client.Reader, pool *valkey.Pool) ClientProvider {
-	return &provider{client: c, apiReader: apiReader, pool: pool}
+	return &provider{client: c, apiReader: apiReader, pool: pool, tlsConfigs: newTLSConfigCache()}
 }
 
 type provider struct {
-	client    client.Client
-	apiReader client.Reader
-	pool      *valkey.Pool
+	client     client.Client
+	apiReader  client.Reader
+	pool       *valkey.Pool
+	tlsConfigs *tlsConfigCache
+}
+
+// tlsConfigTTL is how long a TLS config built from a secret is reused before
+// the secret is read again.
+const tlsConfigTTL = 10 * time.Second
+
+// tlsConfigKey is every input a TLS config is built from.
+type tlsConfigKey struct {
+	namespace  string
+	secretName string
+	serverName string
+	clientCert bool
+}
+
+// builtTLSConfig is a TLS config and its pool token. readAt is taken before
+// the secret is read, so an entry never outlives a change to the secret by
+// more than tlsConfigTTL.
+type builtTLSConfig struct {
+	cfg    *tls.Config
+	token  string
+	readAt time.Time
+}
+
+// tlsConfigCache keeps the TLS configs built from server certificate secrets,
+// which the manager cache does not hold, so that a client lookup does not
+// read the secret from the API server each time. Callers share an entry's
+// config and must not modify it.
+type tlsConfigCache struct {
+	mu      sync.Mutex
+	entries map[tlsConfigKey]builtTLSConfig
+	// now is time.Now; tests replace it.
+	now func() time.Time
+}
+
+func newTLSConfigCache() *tlsConfigCache {
+	return &tlsConfigCache{entries: map[tlsConfigKey]builtTLSConfig{}, now: time.Now}
+}
+
+// get returns the entry for key if its secret was read less than
+// tlsConfigTTL ago.
+func (c *tlsConfigCache) get(key tlsConfigKey) (builtTLSConfig, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[key]
+	if !ok || c.now().Sub(e.readAt) >= tlsConfigTTL {
+		return builtTLSConfig{}, false
+	}
+	return e, true
+}
+
+// put stores e for key and drops every expired entry, so the config of a
+// secret that is no longer dialled does not stay in memory.
+func (c *tlsConfigCache) put(key tlsConfigKey, e builtTLSConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.now()
+	maps.DeleteFunc(c.entries, func(_ tlsConfigKey, old builtTLSConfig) bool {
+		return now.Sub(old.readAt) >= tlsConfigTTL
+	})
+	c.entries[key] = e
+}
+
+// forget drops the entry for key.
+func (c *tlsConfigCache) forget(key tlsConfigKey) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.entries, key)
+}
+
+// tlsConfigKeyFor returns the cache key for spec, and false when spec names
+// no server certificate secret.
+func tlsConfigKeyFor(namespace string, spec *valkeyiov1alpha1.NodeTLSSpec) (tlsConfigKey, bool) {
+	if spec == nil || spec.Certificates.Server.SecretName == "" {
+		return tlsConfigKey{}, false
+	}
+	return tlsConfigKey{
+		namespace:  namespace,
+		secretName: spec.Certificates.Server.SecretName,
+		serverName: spec.ServerName,
+		clientCert: spec.RequiresClientCertificate(),
+	}, true
 }
 
 // tlsConfig returns the TLS config for spec and a token that changes whenever
 // the config would. Both are empty when spec names no server certificate
-// secret.
+// secret. A config is reused for tlsConfigTTL after its secret is read, or
+// until forgetTLSConfig drops it. A failed build is not kept.
 func (p *provider) tlsConfig(ctx context.Context, namespace string, spec *valkeyiov1alpha1.NodeTLSSpec) (*tls.Config, string, error) {
-	if spec == nil || spec.Certificates.Server.SecretName == "" {
+	key, tlsOn := tlsConfigKeyFor(namespace, spec)
+	if !tlsOn {
 		return nil, "", nil
 	}
-	name := spec.Certificates.Server.SecretName
-	clientCert := spec.RequiresClientCertificate()
-	cfg, resourceVersion, err := getTLSConfig(ctx, p.apiReader, name, spec.ServerName, namespace, clientCert)
+	if e, cached := p.tlsConfigs.get(key); cached {
+		return e.cfg, e.token, nil
+	}
+	readAt := p.tlsConfigs.now()
+	cfg, resourceVersion, err := getTLSConfig(ctx, p.apiReader, key.secretName, key.serverName, namespace, key.clientCert)
 	if err != nil {
 		return nil, "", err
 	}
-	return cfg, fmt.Sprintf("%s/%s/%s/%t", name, resourceVersion, spec.ServerName, clientCert), nil
+	token := fmt.Sprintf("%s/%s/%s/%t", key.secretName, resourceVersion, key.serverName, key.clientCert)
+	p.tlsConfigs.put(key, builtTLSConfig{cfg: cfg, token: token, readAt: readAt})
+	return cfg, token, nil
+}
+
+// forgetTLSConfig drops the TLS config kept for spec, so the next lookup reads
+// its secret. A failed dial calls it, since the certificate may have changed.
+func (p *provider) forgetTLSConfig(namespace string, spec *valkeyiov1alpha1.NodeTLSSpec) {
+	if key, tlsOn := tlsConfigKeyFor(namespace, spec); tlsOn {
+		p.tlsConfigs.forget(key)
+	}
 }
 
 // operatorPassword reads the operator password from the cluster's system
@@ -140,9 +241,15 @@ func (p *provider) ForCluster(ctx context.Context, cluster *valkeyiov1alpha1.Val
 		}, nil
 	}
 	cfg.tls = tlsCfg
+	namespace := cluster.Namespace
 
 	return func(ctx context.Context, address string) (vclient.Client, error) {
-		return p.pool.Get(ctx, clientOption(address, cfg), token)
+		c, err := p.pool.Get(ctx, clientOption(address, cfg), token)
+		if err != nil {
+			p.forgetTLSConfig(namespace, tlsSpec)
+			return nil, err
+		}
+		return c, nil
 	}, nil
 }
 
@@ -169,5 +276,10 @@ func (p *provider) ForNode(ctx context.Context, node *valkeyiov1alpha1.ValkeyNod
 	}
 	cfg := connConfig{tls: tlsCfg, username: operatorUser, password: password}
 
-	return p.pool.Get(ctx, clientOption(net.JoinHostPort(node.Status.PodIP, strconv.Itoa(DefaultPort)), cfg), token)
+	c, err := p.pool.Get(ctx, clientOption(net.JoinHostPort(node.Status.PodIP, strconv.Itoa(DefaultPort)), cfg), token)
+	if err != nil {
+		p.forgetTLSConfig(node.Namespace, tlsSpec)
+		return nil, err
+	}
+	return c, nil
 }
