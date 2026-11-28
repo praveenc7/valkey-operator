@@ -92,7 +92,7 @@ func sampleValue(metricType dto.MetricType, metric *dto.Metric) (float64, bool) 
 
 func hasLabels(got, want map[string]string) bool {
 	for name, value := range want {
-		if got[name] != value {
+		if v, ok := got[name]; !ok || v != value {
 			return false
 		}
 	}

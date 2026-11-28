@@ -99,4 +99,9 @@ func TestMetricsSelect(t *testing.T) {
 	assert.Empty(t, metrics.Select("valkey_operator_cluster_state_info", map[string]string{"valkey_cluster": "c"}))
 	assert.Empty(t, metrics.Select("controller_runtime_reconcile_total", map[string]string{"controller": "valkeynode"}))
 	assert.Empty(t, metrics.Select("missing", nil))
+	assert.Empty(t, metrics.Select("valkey_operator_cluster_state_info", map[string]string{"zone": ""}),
+		"a label the samples lack does not match an empty value")
+
+	withEmptyLabel := Metrics{"m": {{Labels: map[string]string{"zone": ""}, Value: 1}}}
+	assert.Len(t, withEmptyLabel.Select("m", map[string]string{"zone": ""}), 1)
 }
