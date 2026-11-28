@@ -111,6 +111,15 @@ Cluster directives the operator does not set, such as `cluster-require-full-cove
 
 Keys may contain only lowercase letters, digits, `.`, `_` and `-`. Valkey matches keys in any case, but the operator picks out live-settable keys such as `maxmemory` by exact name, so it would not apply `MAXMEMORY` live. Valkey also trims and unquotes each config line before reading its key, so a quoted or padded key such as `"port"` would otherwise bypass the list above. Module configs such as `search.<name>` stay valid.
 
+Apart from the reserved keys and [version gating](#version-gated-config), the operator writes `config` to `valkey.conf` as given, including directives that break a node or hide its logs:
+
+- `replicaof` and `slaveof`: Valkey refuses to start with them in cluster mode.
+- `user`: Valkey refuses to start when users are defined in `valkey.conf` and an `aclfile` is set, and the operator always sets `aclfile`.
+- `daemonize yes`: the server forks into the background and the container's main process exits.
+- `logfile`: server logs go to the file instead of stdout, so `kubectl logs` shows nothing.
+- `rename-command`: renaming a command the operator sends, such as `CLUSTER`, `CONFIG`, `ACL` or `INFO`, breaks reconciliation.
+- `include`: Valkey reads the file in place of the line. The operator writes `config` in key order before its own keys and does not check the file, so the file overrides `config` keys that sort before `include`, and can set a reserved key the operator leaves unset, such as `port` on a cluster without TLS.
+
 #### Future plans
 
 - Operator validates configs before they are applied to the server
